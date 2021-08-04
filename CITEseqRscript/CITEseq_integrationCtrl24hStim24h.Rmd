@@ -1,0 +1,863 @@
+---
+title: "CTRL_24h and STIM_24h integration R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+Multimodal assay for CART co-culture with or without samples, including CART identity detection, RNA and CITE-seq protein data
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+load required libraries
+```{r}
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(patchwork)
+library(dsb)
+library(tidyr)
+library(sctransform)
+library(tibble)
+library(RColorBrewer)
+
+```
+First, load your data using Read10x function(from GEO processed data)
+```{r}
+ctrl24h.data <- Read10X(data.dir = "../ctrl24h/outs/raw_feature_bc_matrix/")
+stim24h.data <- Read10X(data.dir = "../stim24h/outs/raw_feature_bc_matrix/")
+
+```
+
+simplify features name and check them after them
+```{r}
+rownames(x = ctrl24h.data[["Antibody Capture"]]) <- gsub(pattern = "_[Kappa_isotype_Ctrl_]*TotalSeqC", replacement = "",  x = rownames(x = ctrl24h.data[["Antibody Capture"]]))
+rownames(x = stim24h.data[["Antibody Capture"]]) <- gsub(pattern = "_[Kappa_isotype_Ctrl_]*TotalSeqC", replacement = "",  x = rownames(x = stim24h.data[["Antibody Capture"]]))
+
+head(rownames(x = ctrl24h.data[["Antibody Capture"]]))
+head(rownames(x = stim24h.data[["Antibody Capture"]]))
+```
+separate 3 assay matrix, keep 31 CITE-seq features including hashing tags(HTO1,HTO3,HTO4)
+```{r}
+ctrl24h.rna <- ctrl24h.data[["Gene Expression"]]
+ctrl24h.adt <- ctrl24h.data[["Antibody Capture"]]
+
+stim24h.rna <- stim24h.data[["Gene Expression"]]
+stim24h.adt <- stim24h.data[["Antibody Capture"]]
+```
+change column names with -1 pattern to conditions, make sure they are matched in different matrix, split HTO features out
+```{r}
+colnames(ctrl24h.rna) <- gsub(pattern = "-1", replacement = "", x = colnames(x = ctrl24h.rna))
+colnames(ctrl24h.adt) <- gsub(pattern = "-1", replacement = "", x = colnames(x = ctrl24h.adt))
+
+head(colnames(ctrl24h.rna))
+head(colnames(ctrl24h.adt))
+
+colnames(stim24h.rna) <- gsub(pattern = "-1", replacement = "", x = colnames(x = stim24h.rna))
+colnames(stim24h.adt) <- gsub(pattern = "-1", replacement = "", x = colnames(x = stim24h.adt))
+
+head(colnames(stim24h.rna))
+head(colnames(stim24h.adt))
+head(rownames(stim24h.adt))
+     
+ctrl24h.hto <- ctrl24h.adt[1:3,]
+stim24h.hto <- stim24h.adt[1:3,]
+```
+using HTO demultiplexing separately to define background/empty droplets
+CLR normalization, MultiseqDemux(); fisrstly creat seurat object and add "HTO"data
+normalization HTO data first
+```{r}
+ctrl24hcart <- CreateSeuratObject(counts = ctrl24h.rna, project = "ctrl24hcart")
+ctrl24hcart[["HTO"]] <- CreateAssayObject(counts = ctrl24h.hto)
+
+stim24hcart <- CreateSeuratObject(counts = stim24h.rna, project = "stim24hcart")
+stim24hcart[["HTO"]] <- CreateAssayObject(counts = stim24h.hto)
+```
+Normalization and demultiplexing by MULTIseqDemux
+```{r}
+ctrl24hcart <- NormalizeData(ctrl24hcart, assay = "HTO", normalization.method = "CLR")
+ctrl24hcart <- MULTIseqDemux(ctrl24hcart, assay = "HTO", quantile = 0.7, autoThresh = FALSE, maxiter = 5, qrange = seq(from = 0.1, to = 0.9, by = 0.05), verbose = TRUE)
+
+stim24hcart <- NormalizeData(stim24hcart, assay = "HTO", normalization.method = "CLR")
+stim24hcart <- MULTIseqDemux(stim24hcart, assay = "HTO", quantile = 0.7, autoThresh = FALSE, maxiter = 5, qrange = seq(from = 0.1, to = 0.9, by = 0.05), verbose = TRUE)
+```
+plot numbers per classification
+```{r}
+table(ctrl24hcart$MULTI_ID)
+table(ctrl24hcart$MULTI_classification)
+
+table(stim24hcart$MULTI_ID)
+table(stim24hcart$MULTI_classification)
+```
+separate negative and singlet
+```{r}
+Idents(ctrl24hcart) = "MULTI_ID"
+ctrl24hcart_neg = subset(ctrl24hcart, idents = "Negative")
+ctrl24hcart_singlet = subset(ctrl24hcart, idents = c("HTO1", "HTO3", "HTO4"))
+
+Idents(stim24hcart) = "MULTI_ID"
+stim24hcart_neg = subset(stim24hcart, idents = "Negative")
+stim24hcart_singlet = subset(stim24hcart, idents = c("HTO1", "HTO3", "HTO4"))
+```
+Add ADT data into negative or singlet separately
+```{r}
+ctrl24hcart_neg[["ADT"]] <- CreateAssayObject(counts = ctrl24h.adt[4:34, colnames(x = ctrl24hcart_neg)])
+ctrl24hcart_singlet[["ADT"]] <- CreateAssayObject(counts = ctrl24h.adt[4:34,colnames(x = ctrl24hcart_singlet)])
+
+ctrl24hrna_neg_mtx <- as.sparse(GetAssayData(ctrl24hcart_neg, assay = "RNA", slot = 'counts'))
+ctrl24hrna_singlet_mtx <- GetAssayData(ctrl24hcart_singlet, assay = "RNA", slot = 'counts') %>% as.matrix()
+
+stim24hcart_neg[["ADT"]] <- CreateAssayObject(counts = stim24h.adt[4:34, colnames(x = stim24hcart_neg)])
+stim24hcart_singlet[["ADT"]] <- CreateAssayObject(counts = stim24h.adt[4:34,colnames(x = stim24hcart_singlet)])
+
+stim24hrna_neg_mtx <- as.sparse(GetAssayData(stim24hcart_neg, assay = "RNA", slot = 'counts'))
+stim24hrna_singlet_mtx <- GetAssayData(stim24hcart_singlet, assay = "RNA", slot = 'counts') %>% as.matrix()
+```
+non sparse CITEseq data actually store better in a regular materix so the as.matrix() call is not memory intensive.
+```{r}
+neg_adt_matrix = GetAssayData(ctrl24hcart_neg, assay = "ADT", slot = 'counts') %>% as.matrix()
+positive_adt_matrix = GetAssayData(ctrl24hcart_singlet, assay = "ADT", slot = 'counts') %>% as.matrix()
+
+stim24h_neg_adt_matrix = GetAssayData(stim24hcart_neg, assay = "ADT", slot = 'counts') %>% as.matrix()
+stim24h_positive_adt_matrix = GetAssayData(stim24hcart_singlet, assay = "ADT", slot = 'counts') %>% as.matrix()
+```
+removing isotype control background for ADT data and correcting for per-cell technical factor as a covariate
+```{r}
+isotypes = c("Mouse-IgG1", "Mm-IgG2a","Mm-IgG2b")
+normalized_matrix = DSBNormalizeProtein(cell_protein_matrix = positive_adt_matrix, empty_drop_matrix = neg_adt_matrix, use.isotype.control = TRUE, isotype.control.name.vec = isotypes)
+
+stim24h_normalized_matrix = DSBNormalizeProtein(cell_protein_matrix = stim24h_positive_adt_matrix, 
+                                             empty_drop_matrix = stim24h_neg_adt_matrix, use.isotype.control = TRUE, isotype.control.name.vec = isotypes)
+```
+add dsb normalized data to ADT "data" slot
+```{r}
+ctrl24hcart_singlet = SetAssayData(object = ctrl24hcart_singlet, assay = "ADT", slot = "data", new.data = normalized_matrix)
+
+stim24hcart_singlet = SetAssayData(object = stim24hcart_singlet, assay = "ADT", slot = "data", new.data = stim24h_normalized_matrix)
+```
+QC and filter RNA data
+```{r}
+ctrl24hcart_singlet[["percent.mt"]] <- PercentageFeatureSet(ctrl24hcart_singlet, assay = "RNA", pattern = "^MT-")
+head(ctrl24hcart_singlet@meta.data, 5)
+mt.m1 = mean(ctrl24hcart_singlet$percent.mt)
+
+stim24hcart_singlet[["percent.mt"]] <- PercentageFeatureSet(stim24hcart_singlet, assay = "RNA", pattern = "^MT-")
+head(stim24hcart_singlet@meta.data, 5)
+mt.m2 = mean(stim24hcart_singlet$percent.mt)
+```
+vlnplot or histogram plot QC parameters
+```{r}
+VlnPlot(ctrl24hcart_singlet, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+hist(ctrl24hcart_singlet$nFeature_RNA)
+hist(ctrl24hcart_singlet$percent.mt)
+
+VlnPlot(stim24hcart_singlet, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+hist(stim24hcart_singlet$nFeature_RNA)
+hist(stim24hcart_singlet$percent.mt)
+```
+for ctrl24h: filter nFeature_RNA > 300 & nFeature_RNA < 6000 & percent.mt < 20
+```{r}
+ctrl24hcart_singlet.sub <- subset(ctrl24hcart_singlet, subset = nFeature_RNA > 300 & nFeature_RNA < 6000 & percent.mt < 20)
+VlnPlot(ctrl24hcart_singlet.sub, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+table(ctrl24hcart_singlet.sub$MULTI_ID)
+```
+for stim24h: filter nFeature_RNA > 300 & nFeature_RNA < 5000 & percent.mt < 25
+```{r}
+stim24hcart_singlet.sub <- subset(stim24hcart_singlet, subset = nFeature_RNA > 300 & nFeature_RNA < 5000 & percent.mt < 25)
+VlnPlot(stim24hcart_singlet.sub, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+table(stim24hcart_singlet.sub$MULTI_ID)
+```
+Normalize RNA data, FindvariableFeature and scale data 
+```{r}
+ctrl24hcart_singlet.sub <- NormalizeData(ctrl24hcart_singlet.sub, assay = "RNA")
+ctrl24hcart_singlet.sub <- FindVariableFeatures(ctrl24hcart_singlet.sub, assay = "RNA", selection.method = "vst", nfeatures = 3000)
+ctrl24h_top10 <- head(VariableFeatures(ctrl24hcart_singlet.sub), 10)
+dim(ctrl24hcart_singlet.sub)
+
+stim24hcart_singlet.sub <- NormalizeData(stim24hcart_singlet.sub, assay = "RNA")
+stim24hcart_singlet.sub <- FindVariableFeatures(stim24hcart_singlet.sub, assay = "RNA", selection.method = "vst", nfeatures = 3000)
+stim24h_top10 <- head(VariableFeatures(stim24hcart_singlet.sub), 10)
+```
+scale RNA data
+```{r}
+all.genes1 <- rownames(ctrl24hcart_singlet.sub)
+ctrl24hcart_singlet.sub <- ScaleData(ctrl24hcart_singlet.sub, features = all.genes1, vars.to.regress = "percent.mt")
+
+all.genes2 <- rownames(stim24hcart_singlet.sub)
+stim24hcart_singlet.sub <- ScaleData(stim24hcart_singlet.sub, features = all.genes2, vars.to.regress = "percent.mt")
+
+```
+Run PCA, select PCs number for tSNE visualization and graph-based clustering
+```{r}
+ctrl24hcart_singlet.sub <- RunPCA(ctrl24hcart_singlet.sub, assay = "RNA", verbose = FALSE)
+
+stim24hcart_singlet.sub <- RunPCA(stim24hcart_singlet.sub, assay = "RNA", verbose = FALSE)
+```
+SCT assay
+```{r}
+ctrl24hcart_singlet.sub <- SCTransform(ctrl24hcart_singlet.sub, vars.to.regress = "percent.mt", verbose = FALSE)
+
+stim24hcart_singlet.sub <- SCTransform(stim24hcart_singlet.sub, vars.to.regress = "percent.mt", verbose = FALSE)
+```
+Add CART identity information into ctrl24h seuratobject; 
+Firstly, get s921cart.sub matrix for get identical colnames
+```{r}
+ctrl24h.rna_submtx <- GetAssayData(ctrl24hcart_singlet.sub, assay = "RNA", slot = 'counts') %>% as.sparse()
+
+stim24h.rna_submtx <- GetAssayData(stim24hcart_singlet.sub, assay = "RNA", slot = 'counts') %>% as.sparse()
+```
+load pacbio&miseq&illumina-seq umi count per cell per gene matrix
+```{r}
+ctrl24h_CAR <- read.table(file = 'Z:/R_Projects/pacbio/compareMiseqPacbio/ctrl24h_uniq_v5/ctrl24h_finalMatrix.tsv', sep = '\t', header = TRUE)
+row.names(ctrl24h_CAR) <- ctrl24h_CAR$bc
+ctrl24h_CAR$bc <- NULL
+
+stim24h_CAR <- read.table(file = 'Z:/R_Projects/pacbio/compareMiseqPacbio/stim24h_uniq_v5/stim24h_finalMatrix.tsv', sep = '\t', header = TRUE)
+row.names(stim24h_CAR) <- stim24h_CAR$bc
+stim24h_CAR$bc <- NULL
+```
+change matrix to sparse.matrix
+```{r}
+ctrl24h_car <- as.sparse(ctrl24h_CAR)
+
+stim24h_car <- as.sparse(stim24h_CAR)
+```
+check how many intersect cell barcode between RNA expression matrix and CAR identity matrix from miseq
+```{r}
+b1 = intersect(colnames(ctrl24h.rna_submtx), colnames(ctrl24h_car))  ##1058
+rowSums(ctrl24h_car)
+b2 = intersect(colnames(stim24h.rna_submtx), colnames(stim24h_car))  ##909
+rowSums(stim24h_car)
+```
+make a matrix with identical rows of miseq matrix and supplemental columns and filled with 0.
+```{r}
+ctrl24hcar_sup = matrix(0, nrow = nrow(ctrl24h_car), ncol = 11081)  ##12139-1058
+
+stim24hcar_sup = matrix(0, nrow = nrow(stim24h_car), ncol = 11315)  ##12224-909
+```
+add colnames for additional matrix; column combine two matrix to get matrix with identical numbers and names of columns; adjust columns order to keep consistence
+```{r}
+colnames(ctrl24hcar_sup) = colnames(ctrl24h.rna_submtx)[-which(colnames(ctrl24h.rna_submtx) %in% b1)]
+ctrl24hcar_full <- cbind(ctrl24h_car, ctrl24hcar_sup)
+ctrl24hcar_full = ctrl24hcar_full[,colnames(ctrl24h.rna_submtx)]
+
+colnames(stim24hcar_sup) = colnames(stim24h.rna_submtx)[-which(colnames(stim24h.rna_submtx) %in% b2)]
+stim24hcar_full <- cbind(stim24h_car, stim24hcar_sup)
+stim24hcar_full = stim24hcar_full[,colnames(stim24h.rna_submtx)]
+```
+Add miseq data to seurat object
+```{r}
+ctrl24hcart_singlet.sub[["CAR"]] <- CreateAssayObject(ctrl24hcar_full[, colnames(ctrl24hcart_singlet.sub)])
+
+stim24hcart_singlet.sub[["CAR"]] <- CreateAssayObject(stim24hcar_full[, colnames(stim24hcart_singlet.sub)])
+```
+define CART identity: only one kind and reads count>=1
+```{r}
+a1 = c()
+for (i in 1:ncol(ctrl24hcar_full)){
+  if(sum(ctrl24hcar_full[,i]>0)>1){
+    a1[i] = "doublet"
+  } else if (sum(ctrl24hcar_full[,i]>0)==1) {
+    a1[i] = names(which(ctrl24hcar_full[,i]>0))
+  } else {
+    a1[i] = "negative"
+  }
+}
+table(a1)
+
+a2 = c()
+for (i in 1:ncol(stim24hcar_full)){
+  if(sum(stim24hcar_full[,i]>0)>1){
+    a2[i] = "doublet"
+  } else if (sum(stim24hcar_full[,i]>0)==1) {
+    a2[i] = names(which(stim24hcar_full[,i]>0))
+  } else {
+    a2[i] = "negative"
+  }
+}
+
+table(a2)
+```
+Add meta.data into object as CAR.idents
+```{r}
+ctrl24hcart_singlet.sub = AddMetaData(object = ctrl24hcart_singlet.sub, metadata = a1, col.name = "CAR.idents")
+head(ctrl24hcart_singlet.sub@meta.data, n=20)
+tail(ctrl24hcart_singlet.sub@meta.data)
+
+stim24hcart_singlet.sub = AddMetaData(object = stim24hcart_singlet.sub, metadata = a2, col.name = "CAR.idents")
+head(stim24hcart_singlet.sub@meta.data)
+tail(stim24hcart_singlet.sub@meta.data)
+```
+saveRDS
+```{r}
+saveRDS(ctrl24hcart_singlet.sub, file = "Z:/R_Projects/CART_integration/s921ctrl24hstim24h_integration/ctrl24hcart_singlet_sub.rds")
+saveRDS(stim24hcart_singlet.sub, file = "Z:/R_Projects/CART_integration/s921ctrl24hstim24h_integration/stim24hcart_singlet.sub.rds")
+
+```
+ read in above RDS files
+```{r}
+cart24h_ctrl <- readRDS("Z:/R_Projects/CART_integration/s921ctrl24hstim24h_integration/ctrl24hcart_singlet_sub.rds")
+cart24h_stim <- readRDS("Z:/R_Projects/CART_integration/s921ctrl24hstim24h_integration/stim24hcart_singlet.sub.rds")
+```
+Add one column "condition" in metadata
+```{r}
+cart24h_ctrl$condition <- "CTRL_24h"
+head(cart24h_ctrl[[]])
+cart24h_stim$condition <- "STIM_24h"
+head(cart24h_stim[[]])
+```
+make a list containing both objects
+```{r}
+cart_list <- list(cart24h_ctrl, cart24h_stim)
+```
+select features that are repeatedly variable across datasets for integration
+```{r}
+features.rna <- SelectIntegrationFeatures(object.list = cart_list)
+```
+Perform RNA integration
+```{r}
+anchors.rna <- FindIntegrationAnchors(object.list = cart_list, anchor.features = features.rna)
+cart.combined <- IntegrateData(anchorset = anchors.rna)
+```
+Perform an integrated RNA analysis; Run the standard workflow for visualization and clustering
+```{r}
+DefaultAssay(cart.combined) <- "integrated"
+
+cart.combined <- ScaleData(cart.combined, verbose = FALSE)
+cart.combined <- RunPCA(cart.combined, reduction.name = "pca_integrated", reduction.key = "pca_integrated_", verbose = FALSE)
+ElbowPlot(cart.combined, reduction = "pca_integrated", ndims = 50)
+```
+Explore the new dimensional reduction structure
+```{r}
+cart.combined[['pca_integrated']]
+head(Embeddings(cart.combined, reduction = "pca_integrated")[, 1:5])
+head(Loadings(cart.combined, reduction = "pca_integrated")[, 1:5])
+head(Stdev(cart.combined, reduction = "pca_integrated"))
+```
+dsb normalized protein data without ScaleData(); using prcomp to run PCA without scale.data
+```{r}
+DefaultAssay(cart.combined) <- 'ADT'
+VariableFeatures(cart.combined) <- rownames(cart.combined[["ADT"]])[1:28]
+
+adt_dsb.mtx <- GetAssayData(cart.combined[["ADT"]], slot = "data")
+adt_dsb.mtx2 <- t(adt_dsb.mtx)
+pca_adt <- prcomp(adt_dsb.mtx2[,1:28], center = TRUE, scale = FALSE)
+
+head(pca_adt$x)
+```
+We will now store this as a custom dimensional reduction called 'pca_adt'
+```{r}
+cart.combined[["pca_adt"]] <- CreateDimReducObject(embeddings = pca_adt$x, 
+                                                   loadings = pca_adt$rotation, stdev = pca_adt$sdev ,
+                                                   key = "pcaadt_", assay = DefaultAssay(cart.combined))
+```
+WNN Assay using for clustering: Identify multimodal neighbors. These will be stored in the neighbors slot, 
+```{r}
+cart.combined <- FindMultiModalNeighbors(
+  cart.combined, reduction.list = list("pca_integrated", "pca_adt"), 
+  dims.list = list(1:50, 1:28), modality.weight.name = c("integratedRNA.weight","mergedADT.weight")
+)
+```
+visualization and clustering by weighted.nn
+```{r}
+cart.combined <- RunUMAP(cart.combined, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+cart.combined <- FindClusters(cart.combined, graph.name = "wsnn", algorithm = 3, resolution = 0.8, verbose = FALSE)
+
+p1 <- DimPlot(cart.combined, reduction = 'wnn.umap', group.by = 'condition', label.size = 5)
+p2 <- DimPlot(cart.combined, reduction = 'wnn.umap', group.by = 'seurat_clusters', split.by = "condition", label = TRUE, repel = TRUE, label.size = 5)+ ggtitle("WNN")
+
+p1
+p2
+```
+Find conserved markers for cluster annotation
+```{r}
+
+```
+
+cluster15 high expressing NBAS(Neuroblastoma cell marker), DDX1(Dying mark)
+```{r}
+DefaultAssay(cart.combined) <- "RNA"
+p3 <- FeaturePlot(cart.combined,reduction = 'wnn.umap', features = c("NBAS", "DDX1"))
+p4 <- VlnPlot(cart.combined, features = c("NBAS", "DDX1"), split.by = "seurat_clusters", cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
+p3+p4
+```
+remove Dying/NB cells(cluster 15)
+```{r}
+levels(Idents(cart.combined))
+Idents(cart.combined) <- "seurat_clusters"
+cart.combined2 <- subset(cart.combined, ident = "15", invert =TRUE)
+levels(Idents(cart.combined2))
+```
+
+stack vlnplot clusters annotation based on RNA expression
+```{r}
+DefaultAssay(cart.combined2) <- "RNA"
+my_cols = c('#F68282', '#31C53F', '#1FA195', '#B95FBB', '#D4D915', '#28CECA', '#ff9a36', 
+             '#2FF18B', '#AC8F14', '#CCB1F1', '#4B4BF7', "#F26419", "#55DDE0", "#33658A", "grey")
+
+rna.features <- c("CD3E", "CD4", "CD8A", "TRDC", "TRGC2", "CD79A", "MS4A1")
+p3 <- VlnPlot(cart.combined2, features = rna.features, split.by = "seurat_clusters", cols = my_cols, pt.size = 0, stack=T, flip = T) + NoLegend()
+
+adt.features <- c("adt_CD4-RPAT4", "adt_CD8-SK1", "adt_CD45RA", "adt_CD45RO", 
+                  "adt_CD197-CCR7","adt_CD27", "adt_CD62L", "adt_CD44","adt_CD25", "adt_CD137-41BB")
+p4 <- VlnPlot(cart.combined2, features = adt.features, split.by = "seurat_clusters", cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
+p3+p4
+
+p5 <- VlnPlot(cart.combined2, features = c("adt_CD4-RPAT4", "adt_CD8-SK1"), split.by = "seurat_clusters", 
+        cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
+p5
+```
+WNN cluster annotation based on above gene or markers expression
+```{r}
+Idents(cart.combined2) <- "seurat_clusters"
+cart.combined2 <- RenameIdents(cart.combined2, `0` = "CD8 T", `1` = "CD4 T", `2` = "CD8 T", 
+                              `3` = "CD8 T", `4` = "CD4 T", `5` = "CD8 T", `6` = "CD8 T", 
+                              `7` = "CD4 T", `8` = "Gamma Delta T", `9` = "CD8 T", 
+                              `10` = "CD4CD8DP T", `11` = "CD8 T", `12` = "CD4 T", 
+                              `13` = "CD8 T", `14` = "B cells")
+level_order <- c("CD4 T", "CD8 T", "CD4CD8DP T", "Gamma Delta T", "B cells")
+
+cart.combined2[["celltype"]] <- Idents(cart.combined2)
+Idents(cart.combined2) <- factor(Idents(cart.combined2), levels = level_order)
+
+p6 <- DimPlot(cart.combined2, reduction = 'wnn.umap', group.by = 'seurat_clusters', label = TRUE, repel = TRUE, label.size = 3) + NoLegend() + ggtitle("Integrated")
+
+p7 = DimPlot(cart.combined2, reduction = 'wnn.umap', group.by = 'celltype', label = TRUE, repel = TRUE, label.size = 3) + NoLegend() + ggtitle("Annotation")
+p6+p7
+```
+subset only CART seurat object
+```{r}
+Idents(cart.combined2) <- "CAR.idents"
+cartonly.combined <- subset(cart.combined2, idents = "negative", invert = TRUE)
+```
+Vlnplot cartonly RNA or ADT features used fo clusters annotation
+```{r}
+Idents(cartonly.combined) <- "seurat_clusters"
+p8 <- VlnPlot(cartonly.combined, features = rna.features, split.by = "seurat_clusters", 
+        cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
+
+p9 <- VlnPlot(cartonly.combined, features = adt.features, idents = c(0,2,3,5,6,9,11,13), split.by = "seurat_clusters", 
+        cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
+
+p10 <- VlnPlot(cartonly.combined, features = adt.features, idents = 11, split.by = "condition", 
+        pt.size = 0, stack=T, flip = T) 
+p8+p9
+p10
+```
+heatmap plot average dsb normalized protein values for clusters annotation: calculate the average of each CITE-seq protein separately for each cluster
+```{r}
+adt_dsb.mtx <- GetAssayData(cart.combined2[["ADT"]], slot = "data")
+prots = rownames(adt_dsb.mtx[1:28,])
+
+Idents(cart.combined2) <- "seurat_clusters"
+cart.combined2$clusters.condition.hto <- paste(Idents(cart.combined2), cart.combined2$condition, cart.combined2$MULTI_ID, sep = "_")
+adt_data = cbind(cart.combined2[[]], as.data.frame(t(adt_dsb.mtx[1:28,])))
+
+adt_plot = adt_data %>% 
+  group_by(seurat_clusters) %>% 
+  summarize_at(.vars = prots, .funs = mean) %>% 
+  column_to_rownames("seurat_clusters") 
+
+adt_plot2 = adt_data %>% 
+  group_by(clusters.condition.hto) %>% 
+  summarize_at(.vars = prots, .funs = mean) %>% 
+  column_to_rownames("clusters.condition.hto") 
+```
+plot a heatmap of the average dsb normalized values for each cluster
+```{r}
+pheatmap::pheatmap(t(adt_plot), color = viridis::viridis(25, option = "B"), fontsize_row = 8, border_color = NA)
+
+pheatmap::pheatmap(t(adt_plot2), color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(28), 
+                   fontsize_row = 8, border_color = NA)
+pheatmap::pheatmap(t(adt_plot2), color = rev(colorRampPalette(brewer.pal(10,"Spectral"))(58)),
+                   fontsize_row = 8, border_color = NA)
+```
+Heatmap for adt average for each cluster in cartonly.combined 
+```{r}
+adt_dsb.mtx <- GetAssayData(cartonly.combined[["ADT"]], slot = "data")
+prots = rownames(adt_dsb.mtx[1:28,])
+Idents(cartonly.combined) <- "seurat_clusters"
+cartonly.combined$clusters.condition.hto <- paste(Idents(cartonly.combined), cartonly.combined$condition, cartonly.combined$MULTI_ID, sep = "_")
+adt_data_only = cbind(cartonly.combined[[]], as.data.frame(t(adt_dsb.mtx[1:28,])))
+adt_plot_only = adt_data %>% 
+  group_by(clusters.condition.hto) %>% 
+  summarize_at(.vars = prots, .funs = mean) %>% 
+  column_to_rownames("clusters.condition.hto") 
+
+pheatmap::pheatmap(t(adt_plot_only), color = rev(colorRampPalette(brewer.pal(10,"Spectral"))(58)),
+                   fontsize_row = 8, border_color = NA)
+```
+Differential expression analysis: Identify genes specific expressed in cluster9
+```{r}
+Idents(cart.combined2) <- "seurat_clusters"
+cluster11 <- FindMarkers(cart.combined2,
+                          ident.1 = 9,
+                          ident.2 = c(0,2,3,5,6,11,13), logfc.threshold = 0)
+cluster11 <- cluster11 %>% arrange(desc(avg_log2FC))
+cluster11$gene <- rownames(cluster11)
+cluster11 <- cluster11[, c(6,2,1,3,4,5)]
+top25_C11 <- top_n(cluster11, n=25, wt = avg_log2FC)
+write.table(cluster11, file = "data/cluster11_0625.tsv", sep ="\t", 
+            quote = FALSE, row.names = FALSE, col.names = TRUE)
+```
+
+Average RNA Expression of each cluster, each gene, split each cluster by "condition.hto"
+```{r}
+Idents(cart.combined2) <- "condition"
+cart.combined2$condition.hto <- paste(Idents(cart.combined2), cart.combined2$MULTI_ID, sep = "_")
+Idents(cart.combined2) <- "seurat_clusters"
+cluster.averages <- AverageExpression(cart.combined2, assays = "RNA", slot = "data", return.seurat = TRUE, add.ident = "condition.hto")
+head(cluster.averages[["RNA"]][,1:6])
+```
+heatmap plot top 25 genes differential expression between cluster 9 and other CD8 clusters
+```{r}
+DoHeatmap(cluster.averages, features = rownames(top25_C11), size = 3, group.bar.height = 0.02,
+          group.colors = my_cols, 
+          draw.lines = TRUE) + 
+  scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), na.value = "white") + 
+  guides(color=FALSE) +
+  theme(axis.text.x = element_text(vjust = 0.5, angle = 90))
+```
+heatmap plot top25 genes of DEGs between cartonly cluster11 and other CD8 clusters
+```{r}
+Idents(cartonly.combined) <- "condition"
+cartonly.combined$condition.hto <- paste(Idents(cartonly.combined), cartonly.combined$MULTI_ID, sep = "_")
+
+Idents(cartonly.combined) <- "seurat_clusters"
+cartonly_cluster.averages <- AverageExpression(cartonly.combined, assays = "RNA", slot = "data", return.seurat = TRUE, add.ident = "condition.hto")
+
+cluster11_cartonly <- FindMarkers(cartonly.combined, ident.1 = 9, ident.2 = c(0,2,3,5,6,11,13), logfc.threshold = 0)
+top25_c11_cartonly <- top_n(cluster11_cartonly, n=25, wt = avg_log2FC)
+cluster11_cartonly  <- cluster11_cartonly  %>% arrange(desc(avg_log2FC))
+cluster11_cartonly$gene <- rownames(cluster11_cartonly)
+cluster11_cartonly  <- cluster11_cartonly [, c(6,2,1,3,4,5)]
+write.table(cluster11_cartonly, file = "data/cluster11_cartonly_0625.tsv", sep ="\t", 
+            quote = FALSE, row.names = TRUE, col.names = TRUE)
+
+DoHeatmap(cartonly_cluster.averages, features = rownames(top25_C11), size = 3, group.bar.height = 0.02,
+          group.colors = my_cols, 
+          draw.lines = TRUE) + 
+  scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), na.value = "white") + 
+  guides(color=FALSE) +
+  theme(axis.text.x = element_text(angle = 90))
+
+```
+Barplot for each condition cell counts in each CART
+```{r}
+Idents(cartonly.combined) <- "CAR.idents"
+t1 = table(Idents(cartonly.combined), cartonly.combined$condition)
+t1 = as.data.frame(t1)
+colnames(t1) <- c("CART", "condition", "cellcounts")
+
+cart.level_order <- c("CT3", "LH1", "LH2", "LH3", "LH4", "LH6", "LH7", "G27-HL", "m276-HL", "m276-LH", "MGB7H3-HL","MGB7H3-LH", "h8H9-HL", "h8H9-LH")
+ggplot(t1, aes(x=factor(CART, level = cart.level_order), y=cellcounts, fill=condition)) + 
+  geom_bar(stat = "identity", width = 0.7, position = position_dodge(0.8)) +
+  geom_text(aes(label=cellcounts), vjust = -0.25, size=3.5, position = position_dodge(1.1)) +
+  ggtitle("TotalCounts_distribution") + ylab("Cell Counts") +
+  theme_classic() +
+  theme(axis.title = element_text( face = "bold", size=10),
+        axis.line = element_line(size = 0.5),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle=45, hjust = 1)) + 
+  scale_y_continuous(expand = expansion(mult = c(0, .05)))
+```
+pie plot cell counts per cluster in ctrl or stim sample
+```{r}
+Idents(cartonly.combined) <- "seurat_clusters"
+df_cartonly <- as.data.frame(prop.table(table(Idents(cartonly.combined), cartonly.combined$condition), margin = 2)) 
+colnames(df_cartonly) <- c("clusters", "condition", "percentage")
+df_cartonly$Freq <- df_cartonly[,3]*100
+
+ctrl_df_cartonly = df_cartonly[which(df_cartonly$condition=="CTRL_24h" & df_cartonly$Freq != 0.000000),]
+stim_df_cartonly = df_cartonly[which(df_cartonly$condition=="STIM_24h" & df_cartonly$Freq != 0.000000),]
+
+cluster_level_order <- c("1", "4", "7", "10", "12", "0", "2", "3", "5", "6", "9", "11", "13", "8", "14")
+
+p10 = ggplot(ctrl_df_cartonly, aes(x="", y=Freq, fill=factor(clusters, level = cluster_level_order))) +
+  geom_bar(stat="identity", width = 1, color = "black") +
+  coord_polar("y", start=0) +
+  geom_text(aes(label = paste0(round(Freq, digits = 1), "%"), x = 1.4), position = position_stack(vjust = 0.5)) + 
+  scale_fill_manual(values=my_cols) + 
+  labs(x = NULL, y = NULL, fill = NULL, title = "CTRL") + 
+  theme_classic() + theme(axis.line = element_blank(),
+                          axis.text = element_blank(),
+                          axis.ticks = element_blank(),
+                          plot.title = element_text(hjust = 0.2, color = "black"))+ NoLegend()
+
+p11 = ggplot(stim_df_cartonly, aes(x="", y=Freq, fill=factor(clusters, level = cluster_level_order))) +
+  geom_bar(stat="identity", width = 1, color = "black") +
+  coord_polar("y", start=0) +
+  geom_text(aes(label = paste0(round(Freq, digits = 1), "%"), x = 1.4), position = position_stack(vjust = 0.5)) + 
+  scale_fill_manual(values=my_cols) + 
+  labs(x = NULL, y = NULL, fill = NULL, title = "STIM") + 
+  theme_classic() + theme(axis.line = element_blank(),
+                          axis.text = element_blank(),
+                          axis.ticks = element_blank(),
+                          plot.title = element_text(hjust = 0.2, color = "black"))
+p10 + p11
+```
+split Seurat objects based on CAR.idents
+```{r}
+Idents(cart.combined2) <- "CAR.idents"
+cart.list <- SplitObject(cart.combined2, split.by = "CAR.idents")
+cart.names <- names(cart.list)
+```
+using For loop to do bar plots of each CART percentage in each cluster
+```{r}
+for(i in 1:length(cart.list)){
+  Idents(cart.list[[i]]) <- "seurat_clusters"
+  df_i <- as.data.frame(prop.table(table(Idents(cart.list[[i]]), cart.list[[i]]$condition), margin = 2)) 
+  colnames(df_i) <- c("cluster", "condition", "percentage")
+  df_i$Freq <- df_i[,3]*100
+  
+  plot = ggplot(df_i, aes(x=factor(cluster, level = cluster_level_order), y=Freq, fill=condition)) + 
+    geom_bar(stat = "identity", width = 0.7, position = position_dodge(0.8)) + 
+    ggtitle(paste(names(cart.list)[i], "CART_distribution", sep = "")) + ylab("% of condition") +
+    theme_classic() +
+    theme(axis.title = element_text( face = "bold", size=10),
+          axis.line = element_line(size = 0.5),
+          axis.title.x = element_blank(),
+          axis.text.x = element_text(size = 8, angle=45, hjust = 1),
+          axis.text.y = element_text(size = 8)) + 
+    scale_y_continuous(expand = expansion(mult = c(0, .05)))
+ 
+  assign(paste0("df_", names(cart.list)[i]), df_i)
+  
+  print(plot)
+}
+```
+Pie chart ploting each cluster proportion for each CAR type
+```{r}
+library(gridExtra)
+library(ggpubr)
+
+for(i in 1:length(cart.list)){
+  Idents(cart.list[[i]]) <- "seurat_clusters"
+  df_i <- as.data.frame(prop.table(table(Idents(cart.list[[i]]), cart.list[[i]]$condition), margin = 2)) 
+  colnames(df_i) <- c("cluster", "condition", "percentage")
+  df_i$Freq <- df_i[,3]*100
+  
+  ctrl_df_i = df_i[which(df_i$condition=="CTRL_24h" & df_i$Freq != 0.000000),]
+  stim_df_i = df_i[which(df_i$condition=="STIM_24h" & df_i$Freq != 0.000000),]
+  
+  ctrl_pie = ggplot(ctrl_df_i, aes(x="", y=Freq, fill=factor(cluster, level = cluster_level_order))) +
+    geom_bar(stat="identity", width = 1, color = "black") +
+    coord_polar("y", start=0) +
+    geom_text(aes(label = paste0(round(Freq, digits = 1), "%"), x = 1.4), position = position_stack(vjust = 0.5)) + 
+    scale_fill_manual(values=my_cols) + 
+    labs(x = NULL, y = NULL, fill = NULL, title = "CTRL") + 
+    theme_classic() + theme(axis.line = element_blank(),
+                            axis.text = element_blank(),
+                            axis.ticks = element_blank(),
+                            plot.title = element_text(hjust = 0.2, color = "black"))
+  
+  stim_pie = ggplot(stim_df_i, aes(x="", y=Freq, fill=factor(cluster, level = cluster_level_order))) +
+    geom_bar(stat="identity", width = 1, color = "black") +
+    coord_polar("y", start=0) +
+    geom_text(aes(label = paste0(round(Freq, digits = 1), "%"), x = 1.4), position = position_stack(vjust = 0.5)) + 
+    scale_fill_manual(values=my_cols) + 
+    labs(x = NULL, y = NULL, fill = NULL, title = "STIM") + 
+    theme_classic() + theme(axis.line = element_blank(),
+                            axis.text = element_blank(),
+                            axis.ticks = element_blank(),
+                            plot.title = element_text(hjust = 0.2, color = "black"))
+  
+  write.table(df_i, file = paste0("data/CARTPctPlot2/df_CARTpct/", "df_", names(cart.list)[i], ".tsv"), sep ="\t", 
+              quote = FALSE, row.names = FALSE, col.names = TRUE )
+  assign(paste0("df_", names(cart.list)[i]), df_i)
+  
+  title <- ggdraw() + draw_label(paste(names(cart.list)[i], "CART_distribution", sep = ""))
+  p = plot_grid(ctrl_pie, stim_pie, labels = c("A", "B"), ncol = 2, nrow = 1)
+  print(plot_grid(title, p, ncol = 1, rel_heights = c(0.1,1)))
+}
+```
+DEGs:compare CT3 with other 7 GPC2 targeting CAR; compare MGB7H3LH with other 6 CD276 targeting CAR
+```{r}
+Idents(cart.combined2) <- "condition"
+levels(Idents(cart.combined))
+
+ctrl <- subset(cart.combined2, idents = "CTRL_24h")
+stim <- subset(cart.combined2, idents = "STIM_24h")
+
+Idents(stim) <- "CAR.idents"
+levels(Idents(stim))
+
+DefaultAssay(stim) <- "SCT"
+CT3vsLH_stim.de <- FindMarkers(stim, ident.1 = "CT3", ident.2 = c("LH1", "LH2", "LH3", "LH4", "LH6", "LH7", "G27-HL"), logfc.threshold = 0, verbose = FALSE)
+top20_ct3vsLH_stim <- top_n(CT3vsLH_stim.de, n=20, wt = avg_log2FC)
+```
+For publication, use SCT assay of combined CTRL_24h and STIM_24h samples
+```{r}
+cart.combined2 <- readRDS("Z:/R_Projects/ctrl24hstim24h_integration/data/cart.combined2_woDyingcells.rds")
+cart24h.merged_SCT <- readRDS("Z:/R_Projects/CART_integration/s921ctrl24hstim24h_integration/cart24h.merged_SCT.rds")
+
+Idents(cart24h.merged_SCT) <- "condition"
+levels(Idents(cart24h.merged_SCT))
+
+ctrl <- subset(cart24h.merged_SCT, idents = "CTRL_24h")
+stim <- subset(cart24h.merged_SCT, idents = "STIM_24h")
+
+Idents(stim) <- "CAR.idents"
+levels(Idents(stim))
+
+DefaultAssay(stim) <- "SCT"
+CT3vsLH_stim.de <- FindMarkers(stim, ident.1 = "CT3", ident.2 = c("LH1", "LH2", "LH3", "LH4", "LH6", "LH7", "G27-HL"), logfc.threshold = 0, verbose = FALSE)
+top20_ct3vsLH_stim <- top_n(CT3vsLH_stim.de, n=20, wt = avg_log2FC)
+```
+
+DEGs matrix sorted by ordered padj
+```{r}
+CT3vsLH_thres_ordered <- CT3vsLH_stim.de %>% mutate(threshold = p_val_adj < 0.05) %>% arrange(p_val_adj)
+CT3vsLH_thres_ordered$gene <- rownames(CT3vsLH_thres_ordered)
+CT3vsLH_thres_ordered <- CT3vsLH_thres_ordered[, c(7,2,1,3,4,5,6)]
+write.table(CT3vsLH_thres_ordered, file = "data/20210720  DE assay of New Categoried CAR-Ts/stim_CT3 vs other 7GPC2 CARs DEGs.tsv", sep ="\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+```
+Create a column to indicate which genes to label
+```{r}
+CT3vsLH_thres_ordered$genelabels <- ""
+CT3vsLH_thres_ordered[rownames(top20_ct3vsLH_stim),]$genelabels <- "TRUE"
+View(CT3vsLH_thres_ordered)
+```
+Volcano plot and add label to show significant different genes between CT3 CAR and other LH CARs
+```{r}
+library(ggrepel)
+options(ggrepel.max.overlaps = Inf)
+
+ggplot(CT3vsLH_thres_ordered) +
+  geom_point(aes(x = avg_log2FC, y = -log10(p_val_adj), colour = threshold)) +
+  geom_text_repel(aes(x = avg_log2FC, y = -log10(p_val_adj), label = ifelse(genelabels == T, rownames(CT3vsLH_thres_ordered),""))) +
+  ggtitle("Volcano plot of stimulated CT3 CARTs relative to other 7 GPC2 CAR-Ts") +
+  scale_color_manual(values=c("black", "red")) +
+  xlab("Average log2 fold change") + 
+  ylab("-log10 adjusted p-value")  +
+  geom_hline(yintercept=-log10(0.05), col="black", linetype = "dashed") +
+  geom_vline(xintercept = c(-0.25, 0.25), col="black", linetype = "dashed") +
+  theme_classic() +
+  theme(legend.position = "none", 
+        plot.title = element_text(size = rel(1.5), hjust = 0.5),
+        axis.title = element_text(size = rel(1.25)))  
+```
+Heatmap show average top20 genes of DEGs btween CT3 CAR and other 6LH CARs
+```{r}
+gpc2_stim <- subset(stim, idents = c("LH1", "LH2", "LH3", "LH4", "LH6", "LH7", "CT3", "G27-HL"))
+gpc2_level_order <- c("LH1", "LH2", "LH3", "LH4", "LH6", "LH7", "CT3", "G27-HL")
+Idents(gpc2_stim) <- factor(Idents(gpc2_stim), levels = gpc2_level_order)
+my_cols2 = c('#D4D915', '#28CECA','#ff9a36', '#2FF18B', '#AC8F14', '#CCB1F1', '#F68282','#31C53F')
+gpc2.averages <- AverageExpression(gpc2_stim, assays = "SCT", slot = "data", return.seurat = TRUE, add.ident = "MULTI_ID")
+head(gpc2.averages[["SCT"]][, 1:5])
+
+DoHeatmap(gpc2.averages, features = rownames(top20_ct3vsLH_stim), size = 3, group.bar.height = 0.04,
+          group.colors = my_cols2, 
+          draw.lines = FALSE) + 
+  scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), na.value = "white") + 
+  guides(color=FALSE) +
+  theme(axis.text.x = element_text(vjust = 0.5, angle = 90))
+```
+
+
+For MGB7H3LH CAR-T, using p_value to do volcano plot due to the rarely detected cell counts
+```{r}
+DefaultAssay(stim) <- "SCT"
+MGB7H3LHvsotherCD276_stim.de <- FindMarkers(stim, ident.1 = "MGB7H3-LH", ident.2 = c("m276-HL", "m276-LH", "MGB7H3-HL", "h8H9-HL","h8H9-LH"), logfc.threshold = 0, verbose = FALSE)
+top14_MGB7H3LHvsotherCD276_stim <- top_n(MGB7H3LHvsotherCD276_stim.de, n=14, wt = avg_log2FC)
+
+MGB7H3LHvsotherCD276_thres_ordered <- MGB7H3LHvsotherCD276_stim.de %>% mutate(threshold =  avg_log2FC >= 1) %>% arrange(avg_log2FC)
+MGB7H3LHvsotherCD276_thres_ordered$gene <- rownames(MGB7H3LHvsotherCD276_thres_ordered)
+MGB7H3LHvsotherCD276_thres_ordered <- MGB7H3LHvsotherCD276_thres_ordered[, c(7,2,1,3,4,5,6)]
+write.table(MGB7H3LHvsotherCD276_thres_ordered, file = "data/20210720  DE assay of New Categoried CAR-Ts/stim_MGB7H3LH vs other 5 CD276 CARs DEGs.tsv", sep ="\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+MGB7H3LHvsotherCD276_thres_ordered$genelabels <- ""
+MGB7H3LHvsotherCD276_thres_ordered$genelabels[1:10] <- "TRUE"
+MGB7H3LHvsotherCD276_thres_ordered[rownames(top14_MGB7H3LHvsotherCD276_stim),]$genelabels <- "TRUE"
+
+ggplot(MGB7H3LHvsotherCD276_thres_ordered) +
+  geom_point(aes(x = avg_log2FC, y = -log10(p_val), colour = threshold)) +
+  geom_text_repel(aes(x = avg_log2FC, y = -log10(p_val), label = ifelse(genelabels == T, rownames(MGB7H3LHvsotherCD276_thres_ordered),""))) +
+  ggtitle("Volcano plot of stimulated MGB7H3LH CARTs vs 5 other CD276 CAR-Ts") +
+  scale_color_manual(values=c("black", "red")) +
+  xlab("Average log2 fold change") + 
+  ylab("-log10 p-value")  +
+  geom_vline(xintercept = c(-1, 1), col="black", linetype = "dashed") +
+  theme_classic() +
+  theme(legend.position = "none", 
+        plot.title = element_text(size = rel(1.5), hjust = 0.5),
+        axis.title = element_text(size = rel(1.25)))
+```
+Heatmap ploting average top10 and bottom10 genes of DEGs between MGB7H3LH and other 6 CD276 CARs
+```{r}
+cd276_stim <- subset(stim, idents = c("m276-HL", "m276-LH", "MGB7H3-HL","MGB7H3-LH", "h8H9-HL", "h8H9-LH"))
+cd276_level_order <- c("m276-HL", "m276-LH", "MGB7H3-HL","MGB7H3-LH", "h8H9-HL", "h8H9-LH")
+Idents(cd276_stim) <- factor(Idents(cd276_stim), levels = cd276_level_order)
+
+cd276.averages <- AverageExpression(cd276_stim, assays = "SCT", slot = "data", return.seurat = TRUE, add.ident = "MULTI_ID")
+my_cols3 = c('#4B4BF7', "#F26419","#55DDE0", "#33658A", '#1FA195', '#B95FBB')
+DoHeatmap(cd276.averages, features = c(rownames(top14_MGB7H3LHvsotherCD276_stim)), size = 3, group.bar.height = 0.04,
+          group.colors = my_cols3, 
+          draw.lines = FALSE) + 
+  scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), na.value = "white") + 
+  guides(color=FALSE) +
+  theme(axis.text.x = element_text(vjust = 0.5, angle = 90))
+```
+heatmaps ploting ctrl vs stim together: Average Expression of each CART based on RNA data
+```{r}
+Idents(cartonly.combined) <- "CAR.idents"
+cart24honly.average <- AverageExpression(cartonly.combined, assays = "RNA", slot = "data", return.seurat = TRUE, add.ident = "condition.hto")
+cart24honly.average2 <- AverageExpression(cartonly.combined, assays = "RNA", slot = "data", return.seurat = TRUE, add.ident = "condition")
+
+gpc2.average <- subset(cart24honly.average, idents = c("LH1", "LH2", "LH3", "LH4", "LH6", "LH7","CT3", "G27-HL"))
+gpc2_level_order <- c("LH1", "LH2", "LH3", "LH4", "LH6", "LH7", "CT3", "G27-HL")
+Idents(gpc2.average) <- factor(Idents(gpc2.average), levels = gpc2_level_order)
+
+cd276.average <- subset(cart24honly.average2, idents = c("m276-HL", "m276-LH", "MGB7H3-HL","MGB7H3-LH", "h8H9-HL", "h8H9-LH"))
+cd276_level_order <- c("m276-HL", "m276-LH", "MGB7H3-HL","MGB7H3-LH", "h8H9-HL", "h8H9-LH")
+Idents(cd276.average) <- factor(Idents(cd276.average), levels = cd276_level_order)
+
+####heatmap color style#### 
+DoHeatmap(gpc2.average, features = rownames(top20_ct3vsLH_stim), size = 3, group.bar.height = 0.04,
+          group.colors = my_cols2, 
+          draw.lines = FALSE) + 
+  scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), na.value = "white") + 
+  guides(color=FALSE) +
+  theme(axis.text.x = element_text(vjust = 0.5, angle = 90))
+
+cd276_de.gene <- rownames(top14_MGB7H3LHvsotherCD276_stim)
+DoHeatmap(cd276.average, features = cd276_de.gene, size = 3, group.bar.height = 0.04,
+          group.colors = my_cols3, 
+          draw.lines = FALSE) + 
+  scale_fill_gradientn(colors = rev(RColorBrewer::brewer.pal(n = 10, name = "RdBu")), na.value = "white") + 
+  guides(color=FALSE) +
+  theme(axis.text.x = element_text(vjust = 0.5, angle = 90))
+```
+To run CellCycleScoring, use a dataset with cell-cycle genes
+```{r}
+g2m.genes = cc.genes.updated.2019$g2m.genes
+s.genes = cc.genes.updated.2019$s.genes
+cartonly.combined <- CellCycleScoring(cartonly.combined, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+head(cartonly.combined)
+```
+Visualize the distribution of cell cycle markers across
+```{r}
+RidgePlot(cartonly.combined, features = c("PCNA", "TOP2A", "MCM6", "MKI67"), ncol = 2)
+as_tibble(cartonly.combined[[]]) %>%
+  ggplot(aes(x= factor(CAR.idents, level = cart.level_order), y = S.Score, fill = condition)) + 
+  geom_bar(stat = "identity", width = 0.7, position = position_dodge(0.8)) +
+  ggtitle("S.Score per CART") + ylab("S.Score") +
+  theme_classic() +
+  theme(axis.title = element_text( face = "bold", size=10),
+        axis.line = element_line(size = 0.5),
+        axis.title.x = element_blank(),
+        axis.text.x = element_text(angle=45, hjust = 1)) + 
+  scale_y_continuous(expand = expansion(mult = c(0, .05)))
+```
+```{r sessioninfo}
+sessionInfo()
+```
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.

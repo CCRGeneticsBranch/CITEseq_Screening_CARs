@@ -1,5 +1,5 @@
 ---
-title: "R Notebook"
+title: "CITEseq analysis of CTRL_0h R Notebook"
 output: html_notebook
 ---
 
@@ -8,6 +8,7 @@ This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute
 Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
 
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+loading required libraries
 ```{r}
 library(Seurat)
 library(dplyr)
@@ -20,34 +21,34 @@ library(sctransform)
 ```
 First, load your data using Read10x function 
 ```{r}
-s921.data <- Read10X(data.dir = "Y:/Meijie_CART/02_PrimaryAnalysisOutput/Seq1n2n3n4n5_GEXnFBC/S921_CART/outs/raw_feature_bc_matrix/")
+ctrl0h.data <- Read10X(data.dir = "Y:/Meijie_CART/02_PrimaryAnalysisOutput/Seq1n2n3n4n5_GEXnFBC/ctrl0h_CART/outs/raw_feature_bc_matrix/")
 ```
 simplify features name and check them after them
 ```{r}
-rownames(x = s921.data[["Antibody Capture"]]) <- gsub(pattern = "_[Kappa_isotype_Ctrl_]*TotalSeqC", replacement = "", x = rownames(x = s921.data[["Antibody Capture"]]))
-head(rownames(x = s921.data[["Antibody Capture"]]))
+rownames(x = ctrl0h.data[["Antibody Capture"]]) <- gsub(pattern = "_[Kappa_isotype_Ctrl_]*TotalSeqC", replacement = "", x = rownames(x = ctrl0h.data[["Antibody Capture"]]))
+head(rownames(x = ctrl0h.data[["Antibody Capture"]]))
 ```
 separate 3 assay matrix, keep 31 CITE-seq features except hashing tags(HTO1,HTO3,HTO4)
 ```{r}
-s921.rna <- s921.data[["Gene Expression"]]
-s921.adt <- s921.data[["Antibody Capture"]]
-s921.adt2 <- s921.data[["Antibody Capture"]][4:34,]
+ctrl0h.rna <- ctrl0h.data[["Gene Expression"]]
+ctrl0h.adt <- ctrl0h.data[["Antibody Capture"]]
+ctrl0h.adt2 <- ctrl0h.data[["Antibody Capture"]][4:34,]
 ```
 change column names with -1 pattern to conditions, make sure they are matched in different matrix
 ```{r}
-colnames(s921.rna) <- gsub(pattern = "-1", replacement = "", x = colnames(x = s921.rna))
-colnames(s921.adt2) <- gsub(pattern = "-1", replacement = "", x = colnames(x = s921.adt2))
-head(colnames(s921.rna))
-head(colnames(s921.adt2))
+colnames(ctrl0h.rna) <- gsub(pattern = "-1", replacement = "", x = colnames(x = ctrl0h.rna))
+colnames(ctrl0h.adt2) <- gsub(pattern = "-1", replacement = "", x = colnames(x = ctrl0h.adt2))
+head(colnames(ctrl0h.rna))
+head(colnames(ctrl0h.adt2))
 ```
 We apply DSB normalization for CITE-seq data, so using DSB Normalization recommend QC method to define background/empty droplets separately
 step I, create a metadata dataframe of simple qc stats for each droplet
 ```{r}
-rna_size = log10(Matrix::colSums(s921.rna))
-prot_size = log10(Matrix::colSums(s921.adt2))
-ngene = Matrix::colSums(s921.rna > 0)
-mtgene = grep(pattern = "^MT-", rownames(s921.rna), value = TRUE)
-propmt = Matrix::colSums(s921.rna[mtgene, ]) / Matrix::colSums(s921.rna)
+rna_size = log10(Matrix::colSums(ctrl0h.rna))
+prot_size = log10(Matrix::colSums(ctrl0h.adt2))
+ngene = Matrix::colSums(ctrl0h.rna > 0)
+mtgene = grep(pattern = "^MT-", rownames(ctrl0h.rna), value = TRUE)
+propmt = Matrix::colSums(ctrl0h.rna[mtgene, ]) / Matrix::colSums(ctrl0h.rna)
 md = as.data.frame(cbind(propmt, rna_size, ngene, prot_size))
 md$bc = rownames(md)
 ```
@@ -60,12 +61,12 @@ cowplot::plot_grid(p1, p2, nrow = 1)
 Nextly,define a vector of background / empty droplet barcodes based on protein library size and mRNA content
 ```{r}
 background_drops = md[md$prot_size < 2.8, ]$bc
-negative_mtx_rawprot = s921.adt2[, background_drops] %>% as.matrix()
+negative_mtx_rawprot = ctrl0h.adt2[, background_drops] %>% as.matrix()
 ```
 define a vector of cell-containing droplet barcodes based on protein library size and mRNA content 
 ```{r}
 positive_cells = md[md$prot_size > 2.8 & md$ngene > 200 & propmt <0.25, ]$bc
-cells_mtx_rawprot = s921.adt2[, positive_cells] %>% as.matrix()
+cells_mtx_rawprot = ctrl0h.adt2[, positive_cells] %>% as.matrix()
 ```
 Check: are the number of cells in line with the expected recovery from the experiment?
 ```{r}
@@ -75,7 +76,7 @@ removing isotype control background for ADT data and correcting for per-cell tec
 ```{r}
 isotypes = c("Mouse_IgG1", "Mm_IgG2a","Mm_IgG2b")
 dsb_norm_prot = DSBNormalizeProtein(cell_protein_matrix = cells_mtx_rawprot, empty_drop_matrix = negative_mtx_rawprot, denoise.counts = TRUE, use.isotype.control = TRUE, isotype.control.name.vec = isotypes)
-s921.adt.norm <- as.sparse(dsb_norm_prot)
+ctrl0h.adt.norm <- as.sparse(dsb_norm_prot)
 ```
 ridge plot protein features and remove some outliers
 ```{r}
@@ -99,104 +100,104 @@ ggplot(pmtx1 %>% filter(dsb_normalized_value > -10 & dsb_normalized_value < 70),
             aes(x = dsb_normalized_value , y = prot, alpha = 1)) + ridge_aes + 
   ggtitle("normalized with region 2 \n as background \n  outlier drops removed ")
 ```
-create s921 seurat object
+create ctrl0h seurat object
 ```{r}
-s921cart <- CreateSeuratObject(counts = s921.rna[, positive_cells], project = "s921cart")
-dim(s921cart)
+ctrl0hcart <- CreateSeuratObject(counts = ctrl0h.rna[, positive_cells], project = "ctrl0hcart")
+dim(ctrl0hcart)
 ```
 Add "ADT" into seurat object
 ```{r}
-s921cart[["ADT"]] <- CreateAssayObject(s921.adt2[, colnames(x = s921cart)])
+ctrl0hcart[["ADT"]] <- CreateAssayObject(ctrl0h.adt2[, colnames(x = ctrl0hcart)])
 ```
 now add the normalized dat back to the object (the singlets defined above as "object")
 ```{r}
-s921cart[["ADT"]] = SetAssayData(object = s921cart[["ADT"]], slot = "data", new.data = s921.adt.norm[, colnames(x = s921cart)])
-head(s921cart[["ADT"]]@data)
+ctrl0hcart[["ADT"]] = SetAssayData(object = ctrl0hcart[["ADT"]], slot = "data", new.data = ctrl0h.adt.norm[, colnames(x = ctrl0hcart)])
+head(ctrl0hcart[["ADT"]]@data)
 ```
 QC and filter data
 ```{r}
-s921cart[["percent.mt"]] <- PercentageFeatureSet(s921cart, pattern = "^MT-")
-hist(s921cart$percent.mt)
-hist(s921cart$nFeature_RNA)
-VlnPlot(s921cart, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+ctrl0hcart[["percent.mt"]] <- PercentageFeatureSet(ctrl0hcart, pattern = "^MT-")
+hist(ctrl0hcart$percent.mt)
+hist(ctrl0hcart$nFeature_RNA)
+VlnPlot(ctrl0hcart, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
 ```
 filter nFeature_RNA > 300 & nFeature_RNA < 6000 & percent.mt < 12.5
 ```{r}
-s921cart.sub <- subset(s921cart, subset = nFeature_RNA > 300 & nFeature_RNA < 6000 & percent.mt < 12.5)
-VlnPlot(s921cart.sub, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
-dim(s921cart.sub)
+ctrl0hcart.sub <- subset(ctrl0hcart, subset = nFeature_RNA > 300 & nFeature_RNA < 6000 & percent.mt < 12.5)
+VlnPlot(ctrl0hcart.sub, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+dim(ctrl0hcart.sub)
 ```
 Normalize RNA data, FindvariableFeature and scale data
 ```{r}
-DefaultAssay(s921cart.sub) <- "RNA"
-s921cart.sub <- NormalizeData(s921cart.sub)
-s921cart.sub <- FindVariableFeatures(s921cart.sub, selection.method = "vst", nfeatures = 3000)
-top10 <- head(VariableFeatures(s921cart.sub), 10)
+DefaultAssay(ctrl0hcart.sub) <- "RNA"
+ctrl0hcart.sub <- NormalizeData(ctrl0hcart.sub)
+ctrl0hcart.sub <- FindVariableFeatures(ctrl0hcart.sub, selection.method = "vst", nfeatures = 3000)
+top10 <- head(VariableFeatures(ctrl0hcart.sub), 10)
 ```
 scaling normalized RNA data for all genes
 ```{r}
-all.genes <- rownames(s921cart.sub)
-s921cart.sub <- ScaleData(s921cart.sub, features = all.genes, vars.to.regress = "percent.mt")
+all.genes <- rownames(ctrl0hcart.sub)
+ctrl0hcart.sub <- ScaleData(ctrl0hcart.sub, features = all.genes, vars.to.regress = "percent.mt")
 ```
 
 run PCA, select PCs number for tSNE visualization and graph-based clustering
 ```{r}
-s921cart.sub <- RunPCA(s921cart.sub, verbose = FALSE)
-ElbowPlot(s921cart.sub, ndims = 50)
+ctrl0hcart.sub <- RunPCA(ctrl0hcart.sub, verbose = FALSE)
+ElbowPlot(ctrl0hcart.sub, ndims = 50)
 ```
 Dementional Reduction analysis on "ADT" assay with DSB normalization, 
 use all ADT features for dimensional reduction; 
 we set a dimensional reduction name to avoid overwriting the
 ```{r}
-DefaultAssay(s921cart.sub) <- 'ADT'
-VariableFeatures(s921cart.sub) <- rownames(s921cart.sub[["ADT"]])[1:28]
-s921cart.sub <- ScaleData(s921cart.sub, assay = "ADT")
-s921cart.sub <- RunPCA(s921cart.sub, features = rownames(s921cart.sub), reduction.name = "pca_adt", reduction.key = "pca_adt_", verbose = FALSE)
+DefaultAssay(ctrl0hcart.sub) <- 'ADT'
+VariableFeatures(ctrl0hcart.sub) <- rownames(ctrl0hcart.sub[["ADT"]])[1:28]
+ctrl0hcart.sub <- ScaleData(ctrl0hcart.sub, assay = "ADT")
+ctrl0hcart.sub <- RunPCA(ctrl0hcart.sub, features = rownames(ctrl0hcart.sub), reduction.name = "pca_adt", reduction.key = "pca_adt_", verbose = FALSE)
 ```
 
-in order to add CAR identity data to above seurat object, should get CAR idents data matrix with identical colnames as s921cart.sub
-get s921cart.sub matrix for get identical colnames
+in order to add CAR identity data to above seurat object, should get CAR idents data matrix with identical colnames as ctrl0hcart.sub
+get ctrl0hcart.sub matrix for get identical colnames
 ```{r}
-s921.rna_submtx <- GetAssayData(s921cart.sub, assay = "RNA", slot = 'counts') %>% as.sparse()
-write.table(s921.rna_submtx, file = "Z:/R_Projects/pacbio/compareMiseqPacbio/S921_comparation/S921.rna_submtx_new2.tsv", 
+ctrl0h.rna_submtx <- GetAssayData(ctrl0hcart.sub, assay = "RNA", slot = 'counts') %>% as.sparse()
+write.table(ctrl0h.rna_submtx, file = "Z:/R_Projects/pacbio/compareMiseqPacbio/ctrl0h_comparation/ctrl0h.rna_submtx_new2.tsv", 
             col.names=T, row.names =T,sep = "\t",quote=F)
 ```
 check how many intersect cell barcode between RNA expression matrix and CAR identity matrix
 ## load All car reads count per cell per gene matrix##
 ```{r}
-S921_CAR <- read.table(file = 'Z:/R_Projects/pacbio/compareMiseqPacbio/s921_uniq_v7/s921_finalMatrix.tsv', sep = '\t', header = TRUE)
-row.names(S921_CAR) <- S921_CAR$bc
-S921_CAR$bc <- NULL
-S921_car <- as.sparse(S921_CAR)
-b = intersect(colnames(s921.rna_submtx), colnames(S921_car))  ##1778
-rowSums(S921_car)
+ctrl0h_CAR <- read.table(file = 'Z:/R_Projects/pacbio/compareMiseqPacbio/ctrl0h_uniq_v7/ctrl0h_finalMatrix.tsv', sep = '\t', header = TRUE)
+row.names(ctrl0h_CAR) <- ctrl0h_CAR$bc
+ctrl0h_CAR$bc <- NULL
+ctrl0h_car <- as.sparse(ctrl0h_CAR)
+b = intersect(colnames(ctrl0h.rna_submtx), colnames(ctrl0h_car))  ##1778
+rowSums(ctrl0h_car)
 ```
 make a matrix with identical rows of miseq matrix and supplemental columns and filled with 0;
 add colnames for additional matrix
 ```{r}
-S921car_sup = matrix(0, nrow = nrow(S921_car), ncol = 2728) ##4506-1778
-colnames(S921car_sup) = colnames(s921.rna_submtx)[-which(colnames(s921.rna_submtx) %in% b)]
+ctrl0hcar_sup = matrix(0, nrow = nrow(ctrl0h_car), ncol = 2728) ##4506-1778
+colnames(ctrl0hcar_sup) = colnames(ctrl0h.rna_submtx)[-which(colnames(ctrl0h.rna_submtx) %in% b)]
 ```
 column combine two matrix to get matrix with identical numbers and names of columns
 ```{r}
-S921car_full <- cbind(S921_car, S921car_sup)
+ctrl0hcar_full <- cbind(ctrl0h_car, ctrl0hcar_sup)
 ```
 adjust columns order to keep consistence
 ```{r}
-S921car_full = S921car_full[,colnames(s921.rna_submtx)]
+ctrl0hcar_full = ctrl0hcar_full[,colnames(ctrl0h.rna_submtx)]
 ```
 Add CAR idents data to seurat object
 ```{r}
-s921cart.sub[["CAR"]] <- CreateAssayObject(S921car_full[, colnames(s921cart.sub)])
+ctrl0hcart.sub[["CAR"]] <- CreateAssayObject(ctrl0hcar_full[, colnames(ctrl0hcart.sub)])
 ```
 define CART identity: only one kind and reads count>=1
 ```{r}
 a = c()
-for (i in 1:ncol(S921car_full)){
-  if(sum(S921car_full[,i]>0)>1){
+for (i in 1:ncol(ctrl0hcar_full)){
+  if(sum(ctrl0hcar_full[,i]>0)>1){
     a[i] = "doublet"
-  } else if (sum(S921car_full[,i]>0)==1) {
-    a[i] = names(which(S921car_full[,i]>0))
+  } else if (sum(ctrl0hcar_full[,i]>0)==1) {
+    a[i] = names(which(ctrl0hcar_full[,i]>0))
   } else {
     a[i] = "negative"
   }
@@ -206,87 +207,87 @@ table(a)
 ```
 Add meta.data into object as CAR.idents
 ```{r}
-s921cart.sub = AddMetaData(object = s921cart.sub, metadata = a, col.name = "CAR.idents")
-head(s921cart.sub@meta.data)
+ctrl0hcart.sub = AddMetaData(object = ctrl0hcart.sub, metadata = a, col.name = "CAR.idents")
+head(ctrl0hcart.sub@meta.data)
 ```
 SCT analysis for RNA data
 ```{r}
-s921cart.sub <- SCTransform(s921cart.sub, vars.to.regress = "percent.mt", verbose = FALSE)
+ctrl0hcart.sub <- SCTransform(ctrl0hcart.sub, vars.to.regress = "percent.mt", verbose = FALSE)
 ```
 WNN assay: combined RNA and protein data to do WNN assay,The WNN graph can be accessed at SO[["wknn"]], and the SNN graph used for clustering at SO[["wsnn"]], Cell-specific modality weights can be accessed at SO$RNA.weight
 ```{r}
-s921cart.sub <- FindMultiModalNeighbors(
-  s921cart.sub, reduction.list = list("pca", "pca_adt"), 
+ctrl0hcart.sub <- FindMultiModalNeighbors(
+  ctrl0hcart.sub, reduction.list = list("pca", "pca_adt"), 
   dims.list = list(1:50, 1:27), modality.weight.name = c("RNA.weight", "ADT.weight")
 )
 ```
 visualization and clustering by weighted.nn
 ```{r}
-s921cart.sub <- RunUMAP(s921cart.sub, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
-s921cart.sub <- FindClusters(s921cart.sub, graph.name = "wsnn", algorithm = 3, resolution = 0.8, verbose = FALSE)
+ctrl0hcart.sub <- RunUMAP(ctrl0hcart.sub, nn.name = "weighted.nn", reduction.name = "wnn.umap", reduction.key = "wnnUMAP_")
+ctrl0hcart.sub <- FindClusters(ctrl0hcart.sub, graph.name = "wsnn", algorithm = 3, resolution = 0.8, verbose = FALSE)
 ```
 save
 ```{r}
-saveRDS(s921cart.sub, file = "Z:/R_Projects/CART_integration/s921s924s925_integration/s921cart_sub2.rds")
+saveRDS(ctrl0hcart.sub, file = "Z:/R_Projects/CART_integration/ctrl0hs924s925_integration/ctrl0hcart_sub2.rds")
 ```
 DimPlot grouped by clusters and CAR.idents
 ```{r}
 
-p4 <- DimPlot(s921cart.sub, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 5) + NoLegend()
+p4 <- DimPlot(ctrl0hcart.sub, reduction = 'wnn.umap', label = TRUE, repel = TRUE, label.size = 5) + NoLegend()
 my_cols <- c('CT3'='#F68282',"LH4"='#31C53F',"LH6"='#1FA195',"m276-HL"='#B95FBB',
               "LH7"='#D4D915', "h8H9-HL"='#28CECA',"MGB7H3-HL"='#ff9a36',"m276-LH"='#2FF18B',
               "negative"='#aeadb3','LH2'='#25aff5', "G27-HL"='#CCB1F1',"LH3"='#A4DFF2',
               "MGB7H3-LH"='#4B4BF7',"LH1"='#AC8F14', "h8H9-LH"='#E6C122')
-p5 <- DimPlot(s921cart.sub, reduction = 'wnn.umap', group.by = 'CAR.idents', cols = my_cols, label.size = 5)
+p5 <- DimPlot(ctrl0hcart.sub, reduction = 'wnn.umap', group.by = 'CAR.idents', cols = my_cols, label.size = 5)
 p4 + p5
-FeaturePlot(s921cart.sub, reduction = 'wnn.umap', features = "adt_CD4-RPAT4")
+FeaturePlot(ctrl0hcart.sub, reduction = 'wnn.umap', features = "adt_CD4-RPAT4")
 ```
 VlnPlot CD4 and CD8 expression to check cluster correct or not
 VlnPlot of CD4 protein expression on each CAR type
 ```{r}
-Idents(s921cart.sub) <- "CAR.idents"
-levels(Idents(s921cart.sub))
+Idents(ctrl0hcart.sub) <- "CAR.idents"
+levels(Idents(ctrl0hcart.sub))
 level_order <- c("LH1", "LH2", "LH3", "LH4", "LH6", "LH7", "CT3", "G27-HL", "m276-HL", "m276-LH", "MGB7H3-HL","MGB7H3-LH", "h8H9-HL", "h8H9-LH", "negative")
-Idents(s921cart.sub) <- factor(Idents(s921cart.sub), levels = level_order)
+Idents(ctrl0hcart.sub) <- factor(Idents(ctrl0hcart.sub), levels = level_order)
 my_cols2 = c('#31C53F', '#1FA195', '#B95FBB', '#D4D915', '#28CECA', '#ff9a36', '#F68282',  
              '#2FF18B', '#AC8F14', '#CCB1F1', '#4B4BF7', "#F26419", "#55DDE0", "#33658A", "grey")
-p6 <- VlnPlot(s921cart.sub, features = "adt_CD4-RPAT4", cols = my_cols2, pt.size = 0.6) + 
+p6 <- VlnPlot(ctrl0hcart.sub, features = "adt_CD4-RPAT4", cols = my_cols2, pt.size = 0.6) + 
   scale_y_continuous(limits = c(-10,75)) + 
   NoLegend()
-p7 <- VlnPlot(s921cart.sub, features = "adt_CD197-CCR7", cols = my_cols2, pt.size = 0.6) + 
+p7 <- VlnPlot(ctrl0hcart.sub, features = "adt_CD197-CCR7", cols = my_cols2, pt.size = 0.6) + 
   scale_y_continuous(limits = c(-5,40)) + 
   NoLegend()
 p6 + p7
 ```
 DimPlot CARTonly
 ```{r}
-Idents(s921cart.sub) <- "CAR.idents"
-s921cartonly <- subset(s921cart.sub, idents = "negative", invert = TRUE)
+Idents(ctrl0hcart.sub) <- "CAR.idents"
+ctrl0hcartonly <- subset(ctrl0hcart.sub, idents = "negative", invert = TRUE)
 
 cart.level_order <- c("LH1", "LH2", "LH3", "LH4", "LH6", "LH7", "CT3", "G27-HL", "m276-HL", "m276-LH", "MGB7H3-HL","MGB7H3-LH", "h8H9-HL", "h8H9-LH")
-Idents(s921cartonly) <- factor(Idents(s921cartonly), levels = cart.level_order)
+Idents(ctrl0hcartonly) <- factor(Idents(ctrl0hcartonly), levels = cart.level_order)
 my_cols <- c('#F68282','#31C53F', '#1FA195', '#B95FBB', '#D4D915', '#28CECA', '#ff9a36', '#2FF18B',
              '#AC8F14', '#CCB1F1', '#4B4BF7', "#F26419", "#55DDE0", "#33658A")
-p10 <- DimPlot(s921cartonly, reduction = 'wnn.umap', group.by = 'CAR.idents', cols = my_cols, label.size = 5)
-p11 <- FeatureScatter(s921cartonly, feature1 = "adt_CD4-RPAT4", feature2 = "rna_CD8A", group.by = "CAR.idents", cols = my_cols)
+p10 <- DimPlot(ctrl0hcartonly, reduction = 'wnn.umap', group.by = 'CAR.idents', cols = my_cols, label.size = 5)
+p11 <- FeatureScatter(ctrl0hcartonly, feature1 = "adt_CD4-RPAT4", feature2 = "rna_CD8A", group.by = "CAR.idents", cols = my_cols)
 p10 + p11
 ```
 
 ```{r}
-p8 <- VlnPlot(s921cart.sub, features = "adt_CD44", cols = my_cols2, pt.size = 0.6) + 
+p8 <- VlnPlot(ctrl0hcart.sub, features = "adt_CD44", cols = my_cols2, pt.size = 0.6) + 
   scale_y_continuous(limits = c(10,25)) + 
   NoLegend()
-p9 <- VlnPlot(s921cart.sub, features = "adt_CD62L", cols = my_cols2, pt.size = 0.6) + 
+p9 <- VlnPlot(ctrl0hcart.sub, features = "adt_CD62L", cols = my_cols2, pt.size = 0.6) + 
   NoLegend()
 p8 + p9
 ```
 ```{r}
-pdf("Z:/R_Projects/CART_integration/s921s924s925_integration/S921CART0h/Vlnplot_adt_CD27_CD137.pdf", width = 10, height = 8)
+pdf("Z:/R_Projects/CART_integration/ctrl0hs924s925_integration/ctrl0hCART0h/Vlnplot_adt_CD27_CD137.pdf", width = 10, height = 8)
 par(mfrow=c(2,1))
-p10 <- VlnPlot(s921cart.sub, features = "adt_CD137-41BB", cols = my_cols2, pt.size = 0.6) + 
+p10 <- VlnPlot(ctrl0hcart.sub, features = "adt_CD137-41BB", cols = my_cols2, pt.size = 0.6) + 
   scale_y_continuous(limits = c(-5,80)) + 
   NoLegend()
-p11 <- VlnPlot(s921cart.sub, features = "adt_CD27", cols = my_cols2, pt.size = 0.6) + 
+p11 <- VlnPlot(ctrl0hcart.sub, features = "adt_CD27", cols = my_cols2, pt.size = 0.6) + 
   NoLegend()
 print(p10 + p11)
 dev.off()
@@ -294,37 +295,37 @@ dev.off()
 plot RNA expression of CD4, SELL, CD62L, CD44, CD27, CD137
 ```{r}
 features.rna <- c("rna_CD4", "rna_CCR7", "rna_CD27", "rna_SELL", "rna_CD44", "rna_IL2RA","rna_TNFRSF9")
-pdf("Z:/R_Projects/CART_integration/s921s924s925_integration/S921CART0h/Vlnplot_RNAexpression.pdf", width = 30, height = 8)
-p12 <- VlnPlot(s921cart.sub, features =features.rna, cols = my_cols2, pt.size = 0.2) + NoLegend()
+pdf("Z:/R_Projects/CART_integration/ctrl0hs924s925_integration/ctrl0hCART0h/Vlnplot_RNAexpression.pdf", width = 30, height = 8)
+p12 <- VlnPlot(ctrl0hcart.sub, features =features.rna, cols = my_cols2, pt.size = 0.2) + NoLegend()
 print(p12)
 dev.off()
 ```
 Stack multiple vlnplot with same x axis
 ```{r}
-levels(Idents(s921cart.sub))
-Idents(s921cart.sub) <- "CAR.idents"
+levels(Idents(ctrl0hcart.sub))
+Idents(ctrl0hcart.sub) <- "CAR.idents"
 level_order <- c("LH1", "LH2", "LH3", "LH4", "LH6", "LH7", "CT3", "G27-HL", "m276-HL", "m276-LH", "MGB7H3-HL","MGB7H3-LH", "h8H9-HL", "h8H9-LH", "negative")
-Idents(s921cart.sub) <- factor(Idents(s921cart.sub), levels = level_order)
+Idents(ctrl0hcart.sub) <- factor(Idents(ctrl0hcart.sub), levels = level_order)
 my_cols2 = c('#F68282', '#31C53F', '#1FA195', '#B95FBB', '#D4D915', '#28CECA', '#ff9a36', 
              '#2FF18B', '#AC8F14', '#CCB1F1', '#4B4BF7', "#F26419", "#55DDE0", "#33658A", "grey")
-VlnPlot(s921cart.sub, features =features.rna, split.by = "CAR.idents", cols = my_cols2, pt.size = 0, stack=T, flip = T)  + NoLegend()
-p8=VlnPlot(s921cartonly, features =features.rna, split.by = "CAR.idents", cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
+VlnPlot(ctrl0hcart.sub, features =features.rna, split.by = "CAR.idents", cols = my_cols2, pt.size = 0, stack=T, flip = T)  + NoLegend()
+p8=VlnPlot(ctrl0hcartonly, features =features.rna, split.by = "CAR.idents", cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
 p8+p10
 ```
 protein features plot in vilion stack format
 ```{r}
 adt.features <- c("adt_CD4-RPAT4","adt_CD45RA", "adt_CD45RO","adt_CD27", "adt_CD62L", "adt_CD137-41BB")
 adt.features2 <- c("adt_CD4-RPAT4", "adt_CD197-CCR7","adt_CD27", "adt_CD62L", "adt_CD44","adt_CD25","adt_CD137-41BB")
-VlnPlot(s921cart.sub, features = adt.features, split.by = "CAR.idents", cols = my_cols2, pt.size = 0, stack=T, flip = T)  + NoLegend()
-VlnPlot(s921cart.sub, features = adt.features2, split.by = "CAR.idents", cols = my_cols2, pt.size = 0, stack=T, flip = T)  + NoLegend()
-p9=VlnPlot(s921cartonly, features = adt.features, split.by = "CAR.idents", cols = my_cols, pt.size = 0, stack=T, flip = T)+ NoLegend()
-p10=VlnPlot(s921cartonly,features = adt.features2, split.by = "CAR.idents", cols = my_cols,pt.size = 0, stack=T, flip = T)+ NoLegend()
+VlnPlot(ctrl0hcart.sub, features = adt.features, split.by = "CAR.idents", cols = my_cols2, pt.size = 0, stack=T, flip = T)  + NoLegend()
+VlnPlot(ctrl0hcart.sub, features = adt.features2, split.by = "CAR.idents", cols = my_cols2, pt.size = 0, stack=T, flip = T)  + NoLegend()
+p9=VlnPlot(ctrl0hcartonly, features = adt.features, split.by = "CAR.idents", cols = my_cols, pt.size = 0, stack=T, flip = T)+ NoLegend()
+p10=VlnPlot(ctrl0hcartonly,features = adt.features2, split.by = "CAR.idents", cols = my_cols,pt.size = 0, stack=T, flip = T)+ NoLegend()
 p9+p10
 ```
 UTD subset and then calculate medium of above ADT features
 ```{r}
-Idents(s921cart.sub) <- "CAR.idents"
-utd <- subset(s921cart.sub, idents = "negative")
+Idents(ctrl0hcart.sub) <- "CAR.idents"
+utd <- subset(ctrl0hcart.sub, idents = "negative")
 ```
 
 ```{r}
@@ -343,8 +344,8 @@ mean(utd.adt_mtx["CD137-41BB",])
 
 stack vlnplot of 14 CART rna or adt features
 ```{r}
-VlnPlot(s921cartonly, features = adt.features, split.by = "CAR.idents", cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
-VlnPlot(s921cartonly, features = features.rna, split.by = "CAR.idents", cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
+VlnPlot(ctrl0hcartonly, features = adt.features, split.by = "CAR.idents", cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
+VlnPlot(ctrl0hcartonly, features = features.rna, split.by = "CAR.idents", cols = my_cols, pt.size = 0, stack=T, flip = T)  + NoLegend()
 ```
 
 
@@ -357,9 +358,9 @@ BiocManager::install("dittoSeq")
 
 ```{r}
 library(dittoSeq)
-Idents(s921cart.sub) <- "CAR.idents"
-DefaultAssay(s921cart.sub) <- "RNA"
-dittoPlot(s921cart.sub, "TNFRSF9", group.by = "CAR.idents",
+Idents(ctrl0hcart.sub) <- "CAR.idents"
+DefaultAssay(ctrl0hcart.sub) <- "RNA"
+dittoPlot(ctrl0hcart.sub, "TNFRSF9", group.by = "CAR.idents",
     plots = c("jitter", "vlnplot", "boxplot"), # <- order matters
     # change the color and size of jitter points
     jitter.color = "blue", jitter.size = 0.5,
@@ -382,19 +383,19 @@ median.stat <- function(x){
     return(out) 
 }
 
-VlnPlot(object = s921cart.sub, features = c("rna_CD4", "rna_CCR7"), combine = F) +
+VlnPlot(object = ctrl0hcart.sub, features = c("rna_CD4", "rna_CCR7"), combine = F) +
     stat_summary(fun.y = median.stat, geom='point', size = 10, colour = "blue") 
 ```
 
 
 list cell counts per CART idents in cart0h_ctrl
 ```{r}
-Idents(s921cart.sub) <- "CAR.idents"
-levels(Idents(s921cart.sub))
-table(Idents(s921cart.sub))
-prop.table(table(Idents(s921cart.sub)))
+Idents(ctrl0hcart.sub) <- "CAR.idents"
+levels(Idents(ctrl0hcart.sub))
+table(Idents(ctrl0hcart.sub))
+prop.table(table(Idents(ctrl0hcart.sub)))
 
-t0 = as.data.frame(table(Idents(s921cartonly)))
+t0 = as.data.frame(table(Idents(ctrl0hcartonly)))
 colnames(t0) <- c("cart", "cellcounts")
 ```
 Barplot for each condition cell counts in each CART 
@@ -413,14 +414,14 @@ p10 = ggplot(t0, aes(x=cart, y=cellcounts, fill=cart)) +
         axis.title.x = element_blank(),
         axis.text.x = element_text(angle=45, hjust = 1)) + 
   scale_y_continuous(expand = expansion(mult = c(0, .05)))
-pdf("Z:/R_Projects/CART_integration/s921s924s925_integration/S921CART0h/s921 CART counts_plot2.pdf", width = 7, height = 4)
+pdf("Z:/R_Projects/CART_integration/ctrl0hs924s925_integration/ctrl0hCART0h/ctrl0h CART counts_plot2.pdf", width = 7, height = 4)
 print(p10)
 dev.off()
 p10
 ```
 pie Chart plot CART fraction in cart0h_ctrl
 ```{r}
-t1 = as.data.frame(prop.table(table(Idents(s921cartonly))))
+t1 = as.data.frame(prop.table(table(Idents(ctrl0hcartonly))))
 colnames(t1) <- c("cart", "Freq")
 pie = ggplot(t1, aes(x="", y=Freq, fill=cart)) +
   geom_bar(stat="identity", width = 1, color = "black") +
@@ -432,7 +433,7 @@ pie = ggplot(t1, aes(x="", y=Freq, fill=cart)) +
                             axis.ticks = element_blank(),
                             plot.title = element_text(hjust = 0.2, color = "black"))
 pie
-pdf("Z:/R_Projects/CART_integration/s921s924s925_integration/S921CART0h/s921 CART percentage_plot.pdf", width = 4, height = 4)
+pdf("Z:/R_Projects/CART_integration/ctrl0hs924s925_integration/ctrl0hCART0h/ctrl0h CART percentage_plot.pdf", width = 4, height = 4)
 print(pie)
 dev.off()
 ```
